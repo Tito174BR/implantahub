@@ -1,0 +1,49 @@
+{
+  "name": "ImplantaHub SaaS",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
+    }
+  },
+  "forwardPorts": [
+    8080,
+    3000,
+    3333,
+    8025,
+    9001,
+    15672,
+    3001,
+    9090
+  ],
+  "portsAttributes": {
+    "8080": {
+      "label": "ImplantaHub",
+      "onAutoForward": "openBrowser"
+    },
+    "3000": {
+      "label": "Frontend direto"
+    },
+    "3333": {
+      "label": "API e Swagger"
+    },
+    "8025": {
+      "label": "Mailpit"
+    },
+    "9001": {
+      "label": "MinIO"
+    },
+    "15672": {
+      "label": "RabbitMQ"
+    },
+    "3001": {
+      "label": "Grafana"
+    },
+    "9090": {
+      "label": "Prometheus"
+    }
+  },
+  "postCreateCommand": "cp -n .env.example .env || true",
+  "remoteUser": "vscode"
+}
