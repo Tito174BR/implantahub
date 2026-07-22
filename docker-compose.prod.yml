@@ -1,0 +1,41 @@
+services:
+  api:
+    build:
+      target: production
+    environment:
+      NODE_ENV: production
+    command: >
+      sh -c "pnpm db:migrate && pnpm start"
+    restart: unless-stopped
+
+  worker:
+    build:
+      target: production
+    restart: unless-stopped
+
+  web:
+    build:
+      target: production
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+        API_INTERNAL_URL: http://api:3333
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: /api/v1
+      API_INTERNAL_URL: http://api:3333
+    restart: unless-stopped
+
+  nginx:
+    restart: unless-stopped
+
+  postgres:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
+
+  rabbitmq:
+    restart: unless-stopped
+
+  minio:
+    restart: unless-stopped

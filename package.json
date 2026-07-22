@@ -1,0 +1,26 @@
+{
+  "name": "implantahub",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.13.1",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "lint": "turbo lint",
+    "format": "prettier --write .",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down -v",
+    "test:e2e": "pnpm --filter @implantahub/e2e test:e2e",
+    "smoke": "node scripts/smoke-test.mjs"
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2",
+    "turbo": "^2.5.4",
+    "typescript": "^5.8.3"
+  }
+}

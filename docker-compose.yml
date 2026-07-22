@@ -1,0 +1,254 @@
+name: implantahub
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: implantahub
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/00-roles.sql:/docker-entrypoint-initdb.d/00-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d implantahub"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [data]
+
+  redis:
+    image: redis:8-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [data]
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: implantahub
+      RABBITMQ_DEFAULT_PASS: implantahub
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 8s
+      timeout: 5s
+      retries: 20
+    networks: [data]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-implantahub}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-implantahub-secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks: [data]
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks: [data]
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: development
+    environment:
+      NODE_ENV: development
+      APP_VERSION: 0.1.0
+      PORT: 3333
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql://implantahub_api:implantahub_api@postgres:5432/implantahub
+      DATABASE_MIGRATION_URL: postgresql://implantahub_migrator:implantahub_migrator@postgres:5432/implantahub
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://implantahub:implantahub@rabbitmq:5672
+      JWT_SECRET: ${JWT_SECRET:-change-this-development-secret-with-at-least-32-characters}
+      COOKIE_SECRET: ${COOKIE_SECRET:-change-this-cookie-secret-with-at-least-32-characters}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-this-encryption-key-with-at-least-32-characters}
+      WEB_ORIGIN: "http://localhost:3000,http://localhost:8080"
+      PUBLIC_API_URL: http://localhost:3333
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-implantahub}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-implantahub-secret}
+      MINIO_BUCKET: implantahub-documents
+      REPORTS_DIR: /app/storage/reports
+    command: >
+      sh -c "pnpm db:migrate &&
+             pnpm db:seed &&
+             pnpm dev"
+    ports:
+      - "3333:3333"
+    volumes:
+      - report_data:/app/storage/reports
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3333/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [app, data, monitoring]
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+      target: development
+    environment:
+      DATABASE_URL: postgresql://implantahub_api:implantahub_api@postgres:5432/implantahub
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://implantahub:implantahub@rabbitmq:5672
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-this-encryption-key-with-at-least-32-characters}
+      REPORTS_DIR: /app/storage/reports
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_FROM: ${SMTP_FROM:-ImplantaHub <no-reply@implantahub.local>}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+    ports: []
+    volumes:
+      - report_data:/app/storage/reports
+    depends_on:
+      api:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    networks: [app, data, monitoring]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: development
+    environment:
+      NEXT_PUBLIC_API_URL: /api/v1
+      API_INTERNAL_URL: http://api:3333
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks: [app]
+
+  nginx:
+    image: nginx:1.29-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          wget -qO- http://127.0.0.1/health/ready | grep -q '"status":"UP"'
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [app]
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+    networks: [monitoring]
+
+  loki:
+    image: grafana/loki:latest
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./infrastructure/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks: [monitoring]
+
+
+  promtail:
+    image: grafana/promtail:latest
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./infrastructure/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+    networks: [monitoring]
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+      - loki
+    networks: [monitoring]
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  minio_data:
+  prometheus_data:
+  loki_data:
+  grafana_data:
+  report_data:
+
+networks:
+  app:
+  data:
+    internal: false
+  monitoring:
